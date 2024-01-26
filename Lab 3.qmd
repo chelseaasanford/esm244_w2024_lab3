@@ -1,0 +1,180 @@
+---
+title: "ESM 244 Lab 3 Part 1: working with spatial data"
+author: "Chelsea Sanford"
+format: 
+  html:
+    code-fold: show
+    toc: true
+    number-sections: true
+    embed-resources: true #this puts the html and figures together (like plots etc) * remember from now on
+editor: visual
+excecute: 
+  echo: true
+  message: false
+  warning: false
+---
+
+```{r setup}
+library(tidyverse)
+library(here)
+library(broom) 
+
+### spatial packages
+library(sf)
+library(tmap)
+```
+
+
+## Read in our data
+
+```{r}
+ca_counties_raw_sf <- read_sf(here('data', 'ca_counties', 'CA_Counties_TIGER2016.shp')) #is the points of our polygons
+
+ca_counties_sf <- ca_counties_raw_sf %>% 
+  janitor::clean_names() %>% 
+  mutate(land_km2 = aland / 1e6) %>%  #divide by one million
+  select(county = name, land_km2) #geometry column will remain in 'simple features'
+
+#get rid of the geometry column
+ca_counties_df <- ca_counties_sf %>% 
+  as.data.frame() %>% 
+  select(-geometry)
+```
+
+## check the CRS
+
+```{r}
+ca_counties_sf %>% st_crs() #st stands for spatial temporal
+# ID["EPSG",3857]] important
+ca_counties_sf %>% terra::crs() #different way to get same info
+```
+
+## explore it visually
+
+```{r}
+plot(ca_counties_sf)
+```
+
+```{r}
+plot(ca_counties_sf %>% select(land_km2)) #select only one plot
+```
+
+```{r}
+ggplot() +
+  geom_sf(data = ca_counties_sf, aes(fill = land_km2), color = 'white', size = 0.1) +
+  theme_void() +
+  scale_fill_gradientn(colors = c('cyan', 'blue', 'purple'))
+```
+
+## Read in some sesbania records
+
+```{r}
+sesbania_sf <- read_sf(here('data/red_sesbania/ds80_for_lab.gpkg')) %>% 
+  janitor::clean_names()
+
+sesbania_sf %>% st_crs() 
+#  ID["EPSG",9001]]]] different coordinate reference system than other data set
+
+plot(sesbania_sf %>% select(id))
+```
+
+## The analysis: 
+
+Let's find the count of red sesbania observed locations in this dataset, by county, and then create a map of all CA counties using the fill color to indicate sesbania counts.
+
+### Pseudocode:
+
+- make sure they are in the same coordinate reference system
+- get the county boundary coordinates to match up with the sesbania coordinates
+- merge the data together using full_join()
+- plot the datasets together
+- use ggplot to plot, use fill = presence
+
+## Transform the CRS so records match counties
+
+```{r}
+sesbania_3857_sf <- st_transform(sesbania_sf, 3857) #transform to new coordinate reference system 'EPSG code 3857'
+sesbania_3857_2_sf <- st_transform(sesbania_sf, st_crs(ca_counties_sf)) #'go find the crs and match it'
+
+st_crs(sesbania_3857_sf) #check to make sure it worked
+```
+
+## Let's plot the two together!
+
+```{r}
+ggplot() +
+  geom_sf(data = ca_counties_sf) + #do not need aes because it has the geometry column
+  geom_sf(data = sesbania_3857_sf, size = 1, color = 'red')
+```
+
+## Spatial join! heavy-duty tools
+
+```{r}
+# order matters!
+ca_sesb_sf <- st_join(ca_counties_sf, sesbania_3857_sf) #match up based on geometries, keeps the geometry of the county and adds the points (better in this case)
+
+sesb_ca_sf <- st_join(sesbania_3857_sf, ca_counties_sf) #keeps the point and adds the county on top
+```
+
+## Summarize by county
+
+Choropleth #regular map
+
+```{r}
+sesb_counts_sf <- ca_sesb_sf %>%
+  group_by(county) %>%
+  summarize(n_records = sum(!is.na(id))) #only count the values that do not have an NA value
+
+ggplot() +
+  geom_sf(data = sesb_counts_sf, aes(fill = n_records), color = 'grey90', size = 1) +
+  scale_fill_gradientn(colors = c('lightgrey', 'orange', 'purple')) +
+  theme_minimal() +
+  labs(fill = 'Number of S. punicea records')
+
+```
+
+## Next Analysis:
+
+For the county with the greatest number of red sesbania records, make a map of those locations and where they occur within the county.
+
+### Psuedocode:
+
+- find the county with the most sesbania (filter by that county) [you could just look for the county with the highest # but waht if you want to use this code with other data]
+- create a new ggplot with just that county and the points overlayed - sesb_ca_sf bc it has the observations
+- you could 
+
+```{r}
+county_max <- sesb_counts_sf %>% 
+  filter(n_records == max(n_records)) %>% 
+  #slice_max(n_records, 1).    thisi si ust a different way of filtering
+  pull(county)
+
+solano_sesb_sf <- sesb_ca_sf %>% 
+  filter(county == county_max)
+  
+solano_sf <- ca_counties_sf %>% 
+  filter(county %in% county_max)
+
+ggplot() +
+  geom_sf(data = solano_sf) +
+  geom_sf(data = solano_sesb_sf, color = 'red') +
+  theme_minimal()
+```
+
+# Making an interactive map with 'tmap' (we should use this for our SHINYAPP!)
+
+do not want to incorporate this code chunk so use #|
+
+```{r}
+#| eval: false
+#| include: true
+
+### set the viewing mode to interactive
+tmap_mode(mode = 'view')
+
+tm_shape(ca_counties_sf) + #start a new tmap opbject
+  tm_fill('land_km2', palette = 'BuGn') + #make filled polygons
+  tm_shape(sesbania_sf) +
+  tm_dots()
+```
+
